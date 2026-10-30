@@ -73,7 +73,9 @@ let browser, broker;
  await phone.goto(`${url}?pair=${code}&b=0&${relay}`);
  await host.waitForFunction(()=>document.getElementById('pairStatus').textContent.startsWith('Phone connected'));
  await phone.waitForFunction(()=>document.getElementById('pairStatus').textContent.startsWith('Computer connected'));
- console.log('PASS QR link pairing connects both devices with no copy/paste');
+ // Phone had 1 point from its standalone race; on pairing it takes the computer's score.
+ await phone.waitForFunction(()=>document.getElementById('scoreA').textContent==='0');
+ console.log('PASS QR link pairing connects both devices with no copy/paste; phone adopts computer score');
  await syntheticCamera(phone);
  await phone.locator('#cameraStart').click();
  await phone.waitForFunction(()=>!document.getElementById('raceCalibrate').disabled);
@@ -84,7 +86,7 @@ let browser, broker;
  await phone.evaluate(()=>window.balls=[{x:440,y:280}]);
  await phone.waitForFunction(()=>document.getElementById('raceDelivery').textContent==='Computer confirmed the result.');
  assert.equal(await host.locator('#scoreB').innerText(),'1');
- assert.equal(await phone.locator('#scoreB').innerText(),'0');
+ await phone.waitForFunction(()=>document.getElementById('scoreB').textContent==='1');
  await phone.locator('#raceResend').evaluate(el=>el.click());await phone.waitForTimeout(300);
  assert.equal(await host.locator('#scoreB').innerText(),'1');
  console.log('PASS relay phone blue crossing -> host award -> receipt; resend deduplicated');
@@ -108,6 +110,17 @@ let browser, broker;
  await phone.waitForFunction(()=>document.getElementById('raceDelivery').textContent==='Computer confirmed the result.');
  await phone.locator('#raceChooseRed').evaluate(el=>el.click());await phone.waitForTimeout(300);assert.equal(await host.locator('#scoreA').innerText(),'1');
  console.log('PASS close finish defers scoring to review, manual award once');
+ // Live two-way score sync for manual changes.
+ await phone.locator('[data-t=a][data-d="1"]').click();
+ await host.waitForFunction(()=>document.getElementById('scoreA').textContent==='2');
+ await host.locator('[data-t=b][data-d="-1"]').click();
+ await phone.waitForFunction(()=>document.getElementById('scoreB').textContent==='0');
+ await phone.locator('#undoBtn').click();
+ await host.waitForFunction(()=>document.getElementById('scoreB').textContent==='1');
+ await phone.waitForTimeout(3000);
+ assert.deepEqual([await host.locator('#scoreA').innerText(),await host.locator('#scoreB').innerText()],['2','1']);
+ assert.deepEqual([await phone.locator('#scoreA').innerText(),await phone.locator('#scoreB').innerText()],['2','1']);
+ console.log('PASS live score sync phone -> computer and computer -> phone, stable after pings');
  // Typed code path (no QR scanner) on a third device.
  const typedContext=await browser.newContext(); const typed=await typedContext.newPage();
  typed.on('pageerror',e=>errors.push(e.message));
