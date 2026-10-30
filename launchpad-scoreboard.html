@@ -275,10 +275,14 @@ function add(t,d){
 function undo(){ const h=S.history.pop(); if(h){ S.a=h.a; S.b=h.b; update(); } }
 function reset(){ window.dispatchEvent(new Event('scoreboard-reset')); snapshot(); S.a=0; S.b=0; flash=null; update(); }
 function toggleView(){ S.view = S.view==='tally' ? 'numbers' : 'tally'; update(); }
+let remoteApplying=false, lastAB=null;
 function update(){
   $('scoreA').textContent=S.a; $('scoreB').textContent=S.b;
   $('viewBtn').textContent = 'Pad view: ' + (S.view==='tally'?'Tally':'Big numbers');
   render(); save();
+  // Tell the phone/computer link when the score itself changed here.
+  if (lastAB && (lastAB[0]!==S.a || lastAB[1]!==S.b) && !remoteApplying) { lastAB=[S.a,S.b]; window.raceScoreboard?.onChange?.(); }
+  lastAB=[S.a,S.b];
 }
 
 function padHit(note){
@@ -395,6 +399,16 @@ function load(){ try{ const d=JSON.parse(localStorage.getItem('lpScore')||'null'
 
 // The race module awards through the existing score/sound/LED path.
 window.raceScoreboard = {
+  // Apply a score that changed on the paired device (no echo back).
+  set(a,b){
+    if (a===S.a && b===S.b) return;
+    const da=a-S.a, db=b-S.b, up = da>0 ? 'a' : db>0 ? 'b' : null;
+    snapshot(); S.a=a; S.b=b;
+    if (up && S.target>0 && S[up]===S.target && da+db===1){ const now=performance.now(); flash={team:up,start:now,until:now+3000}; sndWin(); }
+    else if (up) sndScore(up); else sndMinus();
+    remoteApplying=true; try { update(); } finally { remoteApplying=false; }
+  },
+  onChange: null,
   award(team) { add(team, 1); },
   state() { return { a:S.a, b:S.b, nameA:$('nameA').value, nameB:$('nameB').value }; }
 };
@@ -402,8 +416,8 @@ load(); applyColors(); update();
 setInterval(()=>{ if (flash) render(); }, 110);
 </script>
 <script src="finish-detector.js"></script>
-<script src="qr.js?v=3"></script>
-<script src="relay-link.js?v=3"></script>
-<script src="finish-camera.js?v=3"></script>
+<script src="qr.js?v=4"></script>
+<script src="relay-link.js?v=4"></script>
+<script src="finish-camera.js?v=4"></script>
 </body>
 </html>

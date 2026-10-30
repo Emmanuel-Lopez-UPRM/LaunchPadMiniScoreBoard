@@ -238,6 +238,20 @@
   const BROKERS = query.get('broker') ? [query.get('broker')] : ['wss://broker.hivemq.com:8884/mqtt', 'wss://broker.emqx.io:8084/mqtt'];
   const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let link = null, room = null, peerSeen = -1e9, onlineAt = 0, tickTimer = null, wasPaired = false;
+  // Live score sync: every score change bumps a version number; the higher version wins.
+  // When a phone (re)connects it first adopts the computer's score ("synced").
+  let scoreVersion = 0, synced = false;
+  function scoreMsg(type) { const st = window.raceScoreboard.state(); return { type, role, a:st.a, b:st.b, v:scoreVersion, synced: role === 'host' || synced }; }
+  window.raceScoreboard.onChange = () => { scoreVersion++; if (link?.online) send(scoreMsg('score')); };
+  const okScore = n => Number.isInteger(n) && n >= 0 && n <= 9999;
+  function applyScore(message, adopt) {
+    if (!okScore(message.a) || !okScore(message.b) || !Number.isInteger(message.v) || message.v < 0) return;
+    const st = window.raceScoreboard.state();
+    if (adopt) { scoreVersion = message.v; synced = true; }
+    else if (message.v > scoreVersion) scoreVersion = message.v;
+    else if (!(message.v === scoreVersion && role === 'camera')) return;   // ties: computer wins
+    if (st.a !== message.a || st.b !== message.b) window.raceScoreboard.set(message.a, message.b);
+  }
   const topic = to => `lpsb/v1/${room}/${to}`;
   function paired() { return !!link?.online && performance.now() - peerSeen < 9000; }
   const newCode = () => [...crypto.getRandomValues(new Uint8Array(6))].map(v => CODE_CHARS[v % 32]).join('');
@@ -256,7 +270,7 @@
   function startLink(newRole, code, brokerIndex = 0) {
     if (phase === 'armed' || phase === 'calibrating') resetCalibration('Pairing changed. Race cancelled; recalibrate.');
     stopLink(false);
-    role = newRole; room = code; peerSeen = -1e9; wasPaired = false;
+    role = newRole; room = code; peerSeen = -1e9; wasPaired = false; synced = false;
     link = new RelayLink(BROKERS, { onState: linkState, onMessage: linkMessage });
     link.subscribe(topic(role === 'host' ? 'host' : 'cam'));
     link.start(Math.max(0, Math.min(brokerIndex | 0, BROKERS.length - 1)));
@@ -276,7 +290,7 @@
   }
   function tick() {
     if (!link) return;
-    send({ type:'ping', role });
+    send(scoreMsg('ping'));
     // If the phone reaches a relay but never hears the computer, the computer may
     // be on the other public relay: switch and keep looking.
     if (role === 'camera' && link.online && !paired() && performance.now() - onlineAt > 12000 && BROKERS.length > 1) { onlineAt = performance.now(); link.useNext(); }
@@ -286,11 +300,11 @@
   function checkPaired() {
     const now = paired();
     if (now === wasPaired) return;
-    wasPaired = now; updatePairStatus(); controls();
+    wasPaired = now; if (!now) synced = false; updatePairStatus(); controls();
     if (now && role === 'camera' && race?.resolved && !race.delivered) sendResult();
   }
   function linkState(state) {
-    if (state === 'online') { onlineAt = performance.now(); send({ type:'ping', role }); if (role === 'host') showPairing(); }
+    if (state === 'online') { onlineAt = performance.now(); send(scoreMsg('ping')); if (role === 'host') showPairing(); }
     checkPaired(); updatePairStatus();
   }
   function linkMessage(_topic, message) {
@@ -298,7 +312,11 @@
     const fromOther = message.role ? message.role !== role : true;
     if (!fromOther) return;
     peerSeen = performance.now();
-    if (!wasPaired) { send({ type:'ping', role }); checkPaired(); }
+    if (!wasPaired) { send(scoreMsg('ping')); checkPaired(); }
+    if ('a' in message && 'v' in message) {
+      if (role === 'camera') applyScore(message, !synced);          // phone: first adopt the computer's score
+      else if (message.synced === true) applyScore(message, false); // computer: only trust a phone that has synced
+    }
     if (role === 'host' && message.type === 'result' && /^[a-f0-9-]{36}$/i.test(message.id) && ['a','b',null].includes(message.winner)) {
       awardOnce(message);
       $('pairStatus').textContent = message.winner ? `${laneName(message.winner)} lane won. Point received from the phone.` : 'Tie received from the phone. Scores unchanged.';

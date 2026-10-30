@@ -35,6 +35,8 @@ Phones can run the camera even though they can't control the Launchpad. Let the 
 2. On the phone, point the regular camera app at the QR code and open the link. It connects by itself. If the phone can't scan, type the 6-character code under the QR code and press **Connect to computer**.
 3. Wait for **Phone connected** on the computer and **Computer connected** on the phone. Then run races on the phone as usual.
 
+While connected, the score is shared live: race results, +/−, Undo and Reset on either device (and the Launchpad buttons) update the other device within a moment. When the phone connects it first takes the computer's score.
+
 The computer remembers its code. If either page is reloaded, or the internet drops for a moment, both sides reconnect by themselves, so there's no need to scan again. Use **Make a new code** to stop an old phone from sending results.
 
 How it works: both pages join a private "room" (the code) on a free public MQTT relay (HiveMQ's public broker, with EMQX's as a backup) over a secure WebSocket. Only tiny JSON messages travel: pings, a result ID with the winning lane, and the computer's receipt. No video is sent. There is no account, server or library to install. The QR generator (`qr.js`) and relay client (`relay-link.js`) are small dependency-free files in this repo.
