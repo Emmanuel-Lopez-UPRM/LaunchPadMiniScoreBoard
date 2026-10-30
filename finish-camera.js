@@ -5,7 +5,8 @@
   const video = $('raceVideo'), overlay = $('raceOverlay');
   const sample = document.createElement('canvas'), ctx = sample.getContext('2d', { willReadFrequently:true });
   let stream = null, detector = null, phase = 'off', calibrationStart = null;
-  let lastFrame = null, lastWallFrame = null, callback = null, callbackKind = null;
+  let lastWallFrame = null, videoCallback = null, animationCallback = null;
+  let lastPlaybackTime = null, lastDecodedFrames = null, lastVideoSignal = null;
   let race = null, evidence = null, wakeLock = null, starting = false;
   let peer = null, channel = null, role = null, pairingBusy = false;
   let deliveryTimer = null;
@@ -70,56 +71,72 @@
     }
   }
   function stopCamera(message = 'Camera stopped. Start it again to set up a new race.') {
-    if (callback !== null) {
-      if (callbackKind === 'video') video.cancelVideoFrameCallback(callback); else cancelAnimationFrame(callback);
-    }
-    callback = null;
+    if (videoCallback !== null) video.cancelVideoFrameCallback(videoCallback);
+    if (animationCallback !== null) cancelAnimationFrame(animationCallback);
+    videoCallback = null; animationCallback = null;
     const oldStream = stream; stream = null;
     oldStream?.getTracks().forEach(track => track.stop());
     video.removeEventListener('resize', cameraResize); video.srcObject = null;
     $('cameraPlaceholder').hidden = false;
-    lastFrame = null; lastWallFrame = null; resetCalibration(message);
+    lastWallFrame = null; lastPlaybackTime = null; lastDecodedFrames = null; lastVideoSignal = null; resetCalibration(message);
   }
   function scheduleFrame() {
-    if (!stream) return;
-    if (video.requestVideoFrameCallback) {
-      callbackKind = 'video'; callback = video.requestVideoFrameCallback((now, metadata) => frame(now, metadata.mediaTime));
-    } else {
-      callbackKind = 'animation'; callback = requestAnimationFrame(now => frame(now, video.currentTime));
+    // Frame callbacks are preferred, but some mobile video pipelines stop calling
+    // them while the media clock/decoded frames continue. Keep an independent poll.
+    function onVideoFrame(now) {
+      videoCallback = null;
+      if (!stream) return;
+      lastVideoSignal = now;
+      frame();
+      videoCallback = video.requestVideoFrameCallback(onVideoFrame);
     }
+    function poll(now) {
+      animationCallback = null;
+      if (!stream) return;
+      const decoded = video.getVideoPlaybackQuality?.().totalVideoFrames;
+      const advanced = video.currentTime !== lastPlaybackTime ||
+        (Number.isFinite(decoded) && decoded > (lastDecodedFrames ?? 0));
+      if ((lastVideoSignal === null || now - lastVideoSignal > 120) && advanced) frame();
+      animationCallback = requestAnimationFrame(poll);
+    }
+    if (video.requestVideoFrameCallback) videoCallback = video.requestVideoFrameCallback(onVideoFrame);
+    animationCallback = requestAnimationFrame(poll);
   }
-  function frame(wallTime, mediaTime) {
-    callback = null;
-    if (!stream) return;
+  function frame() {
+    const wallTime = performance.now();
+    if (!stream || video.readyState < 2) return;
     try {
-      if (video.readyState >= 2 && mediaTime !== lastFrame) {
-        const gap = lastFrame === null ? 0 : mediaTime - lastFrame;
-        if (phase === 'armed' && (gap > .25 || gap < 0 || (lastWallFrame !== null && wallTime - lastWallFrame > 300))) {
-          resetCalibration('Video frames were interrupted. Race cancelled; recalibrate and retry.');
-        }
-        lastFrame = mediaTime; lastWallFrame = wallTime;
-        ctx.drawImage(video, 0, 0, sample.width, sample.height);
-        const data = ctx.getImageData(0, 0, sample.width, sample.height).data;
-        if (phase === 'calibrating') {
-          if (calibrationStart === null) calibrationStart = mediaTime;
-          detector.calibrate(data);
-          if (mediaTime - calibrationStart >= 1.2 && detector.samples >= 15) {
-            phase = 'ready'; status('Calibrated. Keep the phone still; arm before releasing the balls.'); controls(); releaseWakeLock();
-          }
-        } else if (phase === 'armed') {
-          const before = detector.crossings.some(Boolean);
-          const result = detector.process(data, mediaTime);
-          if (result.unstable) { resetCalibration('Large scene change detected. Race cancelled; keep the phone and lighting steady, then recalibrate.'); }
-          else {
-            if (!before && result.crossings.some(Boolean)) evidence = captureFrame();
-            const decision = RaceVision.decide(result.crossings, mediaTime);
-            if (decision) finishRace(decision);
-          }
-        }
-        drawOverlay();
+      // Use one monotonic clock across both scheduling paths. A delivered video
+      // callback proves a fresh frame even when Safari reports a repeated mediaTime.
+      const gap = lastWallFrame === null ? 0 : wallTime - lastWallFrame;
+      if (phase === 'armed' && gap > 250) {
+        resetCalibration('Video frames were interrupted. Race cancelled; recalibrate and retry.');
       }
+      lastWallFrame = wallTime;
+      lastPlaybackTime = video.currentTime;
+      lastDecodedFrames = video.getVideoPlaybackQuality?.().totalVideoFrames ?? null;
+      ctx.drawImage(video, 0, 0, sample.width, sample.height);
+      const data = ctx.getImageData(0, 0, sample.width, sample.height).data;
+      if (phase === 'calibrating') {
+        detector.calibrate(data);
+        const elapsed = wallTime - calibrationStart;
+        const progress = Math.min(99, Math.floor(100 * Math.min(elapsed / 1200, detector.samples / 15)));
+        status(`Calibrating empty track… ${progress}% (${detector.samples} frames). Keep the phone still.`);
+        if (elapsed >= 1200 && detector.samples >= 15) {
+          phase = 'ready'; status('Calibrated. Keep the phone still; arm before releasing the balls.'); controls(); releaseWakeLock();
+        }
+      } else if (phase === 'armed') {
+        const before = detector.crossings.some(Boolean);
+        const result = detector.process(data, wallTime / 1000);
+        if (result.unstable) { resetCalibration('Large scene change detected. Race cancelled; keep the phone and lighting steady, then recalibrate.'); }
+        else {
+          if (!before && result.crossings.some(Boolean)) evidence = captureFrame();
+          const decision = RaceVision.decide(result.crossings, wallTime / 1000);
+          if (decision) finishRace(decision);
+        }
+      }
+      drawOverlay();
     } catch (error) { resetCalibration(`Detection stopped: ${error.message}. Recalibrate to retry.`); }
-    scheduleFrame();
   }
   function drawOverlay(target = overlay) {
     const c = target.getContext('2d'), w = target.width, h = target.height, s = settings();
@@ -157,9 +174,15 @@
   }
   function calibrate() {
     if (!stream) return;
-    phase = 'calibrating'; calibrationStart = null;
+    phase = 'calibrating'; calibrationStart = performance.now();
     detector = new RaceVision.FinishDetector(sample.width, sample.height, settings());
-    status('Learning the empty track… keep balls and hands away for two seconds.'); requestWakeLock(); controls();
+    status('Calibrating empty track… 0%. Keep balls and hands away for two seconds.'); requestWakeLock(); controls();
+    // Safari may suspend offscreen inline video. Bring the preview into view and
+    // resume playback within the user's tap rather than waiting on a frozen clock.
+    $('raceStatus').scrollIntoView({ block:'start' });
+    video.play().catch(() => {
+      if (phase === 'calibrating') resetCalibration('Camera playback paused. Stop and restart the camera, then calibrate with the preview visible.');
+    });
   }
   function arm() {
     if (phase !== 'ready') return;
@@ -167,7 +190,7 @@
     detector.previous = [null,null]; detector.crossings = [null,null];
     if (race && !race.delivered && !confirm('The previous result is unresolved or has not been confirmed by the computer. Discard it and start a new race?')) return;
     race = { id:crypto.randomUUID(), winner:null, resolved:false, delivered:false };
-    evidence = null; phase = 'armed'; lastFrame = null; lastWallFrame = performance.now();
+    evidence = null; phase = 'armed'; lastWallFrame = performance.now();
     $('raceResult').hidden = true; $('raceResend').hidden = true;
     status('ARMED · release the balls. Watching both lanes.', 'armed'); requestWakeLock(); controls();
   }
@@ -313,6 +336,10 @@
   window.addEventListener('scoreboard-reset', () => { if (['armed','calibrating'].includes(phase)) resetCalibration('Scoreboard reset. Race cancelled; recalibrate.'); });
   window.addEventListener('pagehide', () => { stopCamera(); disconnect(); });
   setInterval(() => {
+    if (phase === 'calibrating' && performance.now() - calibrationStart > 8000) {
+      resetCalibration('Calibration could not read enough camera frames. Keep the preview visible, stop and restart the camera, then try again.');
+      $('raceStatus').dataset.state = 'error';
+    }
     if (phase === 'armed' && lastWallFrame !== null && performance.now() - lastWallFrame > 500) resetCalibration('Camera stopped delivering frames. Race cancelled; recalibrate.');
   },250);
   drawOverlay(); controls();
