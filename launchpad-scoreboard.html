@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Launchpad Scoreboard</title>
+<style>
+  :root { --bg:#0e0f12; --panel:#181a20; --line:#2a2d36; --text:#e9eaee; --muted:#8b8f9c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,Segoe UI,Arial,sans-serif; }
+  header { display:flex; align-items:center; gap:16px; padding:14px 24px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; letter-spacing:.5px; }
+  #status { color:var(--muted); font-size:14px; flex:1; }
+  #status.ok { color:#5fd38a; } #status.err { color:#ff7a7a; }
+  button { background:#2a2d36; color:var(--text); border:1px solid #3a3e4a; border-radius:8px; padding:8px 14px; font-size:14px; cursor:pointer; }
+  button:hover { background:#353946; }
+  button.primary { background:#3b6cff; border-color:#3b6cff; }
+  main { display:grid; grid-template-columns:1fr 1fr; gap:20px; padding:24px; }
+  .team { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px; text-align:center; border-top:6px solid var(--c); }
+  .team input[type=text] { background:transparent; border:none; color:var(--text); font-size:26px; font-weight:600; text-align:center; width:100%; }
+  .score { font-size:140px; font-weight:800; line-height:1.05; color:var(--c); font-variant-numeric:tabular-nums; }
+  .row { display:flex; justify-content:center; gap:10px; align-items:center; margin-top:8px; }
+  .row button { font-size:22px; width:64px; }
+  .bar { display:flex; gap:12px; align-items:center; justify-content:center; flex-wrap:wrap; padding:0 24px 16px; color:var(--muted); font-size:14px; }
+  .bar input[type=number] { width:70px; background:#111; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px; }
+  .bottom { display:grid; grid-template-columns:auto 1fr; gap:28px; padding:0 24px 32px; align-items:start; }
+  #pad { display:grid; grid-template-columns:repeat(9,30px); gap:4px; background:#000; padding:10px; border-radius:12px; }
+  #pad div { width:30px; height:30px; border-radius:4px; background:#1b1b1b; cursor:pointer; }
+  #pad div.btn { border-radius:6px; transform:scale(.85); }
+  .help { font-size:14px; color:var(--muted); line-height:1.7; }
+  .help b { color:var(--text); }
+  .help h3 { color:var(--text); margin:0 0 6px; font-size:15px; }
+  @media (max-width:800px){ main,.bottom{grid-template-columns:1fr;} .score{font-size:96px;} }
+</style>
+</head>
+<body>
+<header>
+  <h1>LAUNCHPAD SCOREBOARD</h1>
+  <span id="status">Plug in the Launchpad, then press Connect.</span>
+  <button class="primary" id="connect">Connect Launchpad</button>
+</header>
+
+<main>
+  <section class="team" id="cardA">
+    <input type="text" id="nameA" value="Red Team">
+    <div class="score" id="scoreA">0</div>
+    <div class="row">
+      <button data-t="a" data-d="-1">−</button>
+      <button data-t="a" data-d="1">+</button>
+      <input type="color" id="colorA" value="#ff1a1a" title="Team color">
+    </div>
+  </section>
+  <section class="team" id="cardB">
+    <input type="text" id="nameB" value="Blue Team">
+    <div class="score" id="scoreB">0</div>
+    <div class="row">
+      <button data-t="b" data-d="-1">−</button>
+      <button data-t="b" data-d="1">+</button>
+      <input type="color" id="colorB" value="#1a5cff" title="Team color">
+    </div>
+  </section>
+</main>
+
+<div class="bar">
+  Play to <input type="number" id="target" min="0" value="0"> (0 = no limit)
+  <button id="viewBtn">Pad view: Tally</button>
+  <button id="undoBtn">Undo</button>
+  <button id="resetBtn">Reset game</button>
+  <label><input type="checkbox" id="sound" checked> Sound</label>
+  <input type="range" id="vol" min="0.1" max="1" step="0.05" value="0.8" title="Volume">
+</div>
+
+<div class="bottom">
+  <div id="pad" title="Live preview of the Launchpad (click to test)"></div>
+  <div class="help">
+    <h3>Launchpad controls</h3>
+    <b>Tally view:</b> tap any pad on the left half → left team +1 · right half → right team +1<br>
+    <b>Big numbers view:</b> left team's score on the top 4 rows, right team's on the bottom 4 rows (tap the top or bottom half to score)<br>
+    <b>▲ / ▼</b> → left team +1 / −1 &nbsp;·&nbsp; <b>► / ◄</b> → right team +1 / −1<br>
+    Each team has its own score sound, and reaching the target plays a victory tune.<br>
+    <b>Session</b> → switch pad view (tally dots ↔ big numbers)<br>
+    <b>User</b> → undo last change<br>
+    <b>Stop Solo Mute</b> → hold 1 second to reset the game<br>
+    <b>Logo</b> lights in the leading team's color (white when tied). Hitting the target score flashes the winner's color.<br><br>
+    <h3>If it won't connect</h3>
+    Use Chrome or Edge and click <b>Allow</b> when it asks for MIDI access. Close Ableton, Novation Components or any other music app first, because Windows lets only one program use the Launchpad at a time. Unplug and replug it, then press Connect again.
+  </div>
+</div>
+
+<script>
+// ---------- Launchpad Mini MK3 protocol ----------
+const HDR = [0xF0,0x00,0x20,0x29,0x02,0x0D];
+const PROGRAMMER_ON  = [...HDR,0x0E,0x01,0xF7];
+const PROGRAMMER_OFF = [...HDR,0x0E,0x00,0xF7];
+// Programmer-mode layout: pads = row*10+col (row 1 bottom … 8 top, col 1 left … 8 right)
+// top buttons 91–98 (CC), logo 99, side buttons 89,79,…,19 (CC)
+
+// ---------- state ----------
+const S = { a:0, b:0, view:'tally', history:[], target:0 };
+let colA=[127,6,6], colB=[6,23,127];
+let midi=null, outs=[], ins=[], lastPortKey='';
+let flash=null, resetTimer=null, lastMsg='', lastMsgT=0, held19=false;
+
+const $ = id => document.getElementById(id);
+const hex127 = h => [1,3,5].map(i => parseInt(h.substr(i,2),16) >> 1);
+const dim = (c,f) => c.map(v => Math.round(v*f));
+
+// ---------- 3x4 digit font (fits 4 rows per team) ----------
+const FONT4 = {
+ 0:['111','101','101','111'], 1:['110','010','010','111'],
+ 2:['110','001','010','111'], 3:['111','011','001','111'],
+ 4:['101','101','111','001'], 5:['111','110','001','110'],
+ 6:['100','111','101','111'], 7:['111','001','010','010'],
+ 8:['111','111','101','111'], 9:['111','101','111','001']
+};
+// ---------- 3x5 digit font (unused, kept for reference) ----------
+const FONT = {
+ 0:['111','101','101','101','111'], 1:['010','110','010','010','111'],
+ 2:['111','001','111','100','111'], 3:['111','001','111','001','111'],
+ 4:['101','101','111','001','001'], 5:['111','100','111','001','111'],
+ 6:['111','100','111','101','111'], 7:['111','001','010','010','010'],
+ 8:['111','101','111','101','111'], 9:['111','101','111','001','111']
+};
+
+// ---------- build an LED frame ----------
+function frame(){
+  const f = {};
+  for (let r=1;r<=9;r++) for (let c=1;c<=9;c++) f[r*10+c] = [0,0,0];
+  const now = performance.now();
+
+  if (flash && now < flash.until){
+    const on = Math.floor((now - flash.start)/220) % 2 === 0;
+    const col = flash.team==='a' ? colA : colB;
+    for (let r=1;r<=8;r++) for (let c=1;c<=8;c++) f[r*10+c] = on ? col : [0,0,0];
+  } else {
+    flash = null;
+    if (S.view === 'tally') drawTally(f);
+    else { drawNumber(f,'a',8); drawNumber(f,'b',4); }
+  }
+
+  // control buttons
+  f[91]=colA; f[92]=dim(colA,.35); f[94]=colB; f[93]=dim(colB,.35);
+  f[95]= S.view==='numbers' ? [100,100,100] : [20,20,20];
+  f[98]=[60,30,0];
+  f[19]= held19 ? [127,0,0] : [30,0,0];
+  f[99]= S.a>S.b ? colA : S.b>S.a ? colB : [90,90,90];
+  return f;
+}
+
+function drawTally(f){
+  [['a',colA],['b',colB]].forEach(([t,col])=>{
+    let n=S[t], lap=Math.floor(n/32), rem=n%32;
+    if (n>0 && rem===0){ rem=32; lap--; }
+    for (let i=0;i<32;i++){
+      const row = 1 + Math.floor(i/4);
+      const c = t==='a' ? 1+(i%4) : 8-(i%4);
+      f[row*10+c] = i<rem ? col : (lap>0 ? dim(col,.12) : [0,0,0]);
+    }
+  });
+}
+
+function drawNumber(f, t, topRow){
+  // draws team t's score (0-99) in a 4-row band whose top row is topRow
+  const col = t==='a' ? colA : colB;
+  const n = S[t] % 100;
+  const digits = n<10 ? [[n,6]] : [[Math.floor(n/10),1],[n%10,6]];
+  digits.forEach(([d,startCol])=>{
+    FONT4[d].forEach((bits,k)=>{
+      for (let j=0;j<3;j++) if (bits[j]==='1') f[(topRow-k)*10 + startCol + j] = col;
+    });
+  });
+}
+
+// ---------- push frame to device + preview ----------
+function render(){
+  const f = frame();
+  if (outs.length){
+    const msg = [...HDR,0x03];
+    for (const k in f){ const [r,g,b]=f[k]; msg.push(0x03, +k, r&127, g&127, b&127); }
+    msg.push(0xF7);
+    outs.forEach(o=>{ try{ o.send(msg); }catch(e){} });
+  }
+  drawPreview(f);
+}
+
+// ---------- preview grid ----------
+const pad = $('pad'); const cells = {};
+for (let r=9;r>=1;r--) for (let c=1;c<=9;c++){
+  const id = r*10+c; const d=document.createElement('div');
+  if (r===9 || c===9) d.className='btn';
+  d.onclick = () => { if (r===9 || c===9) press(id); else padHit(id); };
+  pad.appendChild(d); cells[id]=d;
+}
+function drawPreview(f){
+  for (const k in cells){
+    const [r,g,b] = f[k] || [0,0,0];
+    const lit = r||g||b;
+    cells[k].style.background = lit ? `rgb(${r*2},${g*2},${b*2})` : (k>90||k%10===9 ? '#262626':'#1b1b1b');
+  }
+}
+
+// ---------- game logic ----------
+function snapshot(){ S.history.push({a:S.a,b:S.b}); if (S.history.length>200) S.history.shift(); }
+function add(t,d){
+  if (S[t]+d < 0) return;
+  snapshot(); S[t]+=d;
+  if (d>0 && S.target>0 && S[t]===S.target){ const now=performance.now(); flash={team:t,start:now,until:now+3000}; sndWin(); }
+  else if (d>0) sndScore(t); else sndMinus();
+  update();
+}
+function undo(){ const h=S.history.pop(); if(h){ S.a=h.a; S.b=h.b; update(); } }
+function reset(){ snapshot(); S.a=0; S.b=0; flash=null; update(); }
+function toggleView(){ S.view = S.view==='tally' ? 'numbers' : 'tally'; update(); }
+function update(){
+  $('scoreA').textContent=S.a; $('scoreB').textContent=S.b;
+  $('viewBtn').textContent = 'Pad view: ' + (S.view==='tally'?'Tally':'Big numbers');
+  render(); save();
+}
+
+function padHit(note){
+  if (S.view==='numbers'){ add(Math.floor(note/10)>=5 ? 'a':'b', 1); }   // top half / bottom half
+  else { add(note%10<=4 ? 'a':'b', 1); }                                   // left half / right half
+}
+function press(cc){
+  switch(cc){
+    case 91: add('a',1); break;  case 92: add('a',-1); break;
+    case 94: add('b',1); break;  case 93: add('b',-1); break;
+    case 95: toggleView(); break;
+    case 98: undo(); break;
+    case 19: held19=true; render(); clearTimeout(resetTimer);
+             resetTimer=setTimeout(()=>{ reset(); held19=false; render(); },1000); break;
+  }
+}
+function release(cc){ if (cc===19){ clearTimeout(resetTimer); held19=false; render(); } }
+
+// ---------- sound ----------
+let actx=null;
+function audio(){ if(!actx){ try{ actx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
+  if(actx && actx.state==='suspended') actx.resume(); return actx; }
+document.addEventListener('pointerdown',audio); document.addEventListener('keydown',audio);
+function tone(freq,start,dur,type='triangle',vol=0.35){
+  const c=audio(); if(!c || !$('sound').checked) return;
+  const t=c.currentTime+start, o=c.createOscillator(), g=c.createGain();
+  o.type=type; o.frequency.value=freq;
+  g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(vol*(+$('vol').value),t+0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(g).connect(c.destination); o.start(t); o.stop(t+dur+0.05);
+}
+function sndScore(t){
+  if (t==='a'){ tone(523,0,.18); tone(784,.12,.35); }          // top team: C - G
+  else        { tone(392,0,.18,'square',.2); tone(587,.12,.35,'square',.2); } // bottom team: G - D
+}
+function sndMinus(){ tone(220,0,.25,'sine',.3); }
+function sndWin(){ [523,659,784,1047,784,1047].forEach((f,i)=>tone(f,i*.13,i===5?.7:.18,'square',.22)); }
+
+// ---------- MIDI ----------
+function onMsg(e){
+  const [st,d1,d2] = e.data;
+  const key = Array.from(e.data).join(','), now = performance.now();
+  if (key===lastMsg && now-lastMsgT<25) return;        // ignore duplicates from a second port
+  lastMsg=key; lastMsgT=now;
+  const type = st & 0xF0;
+  if (type===0x90 && d2>0){
+    const r=Math.floor(d1/10), c=d1%10;
+    if (r>=1&&r<=8&&c>=1&&c<=8) padHit(d1); else press(d1);
+  } else if (type===0xB0){
+    d2>0 ? press(d1) : release(d1);
+  } else if ((type===0x80) || (type===0x90 && d2===0)){
+    release(d1);
+  }
+}
+const isLP = p => /LPMiniMK3|Launchpad/i.test(p.name||'');
+
+function bind(){
+  const allIn=[...midi.inputs.values()], allOut=[...midi.outputs.values()];
+  const key = allIn.concat(allOut).map(p=>p.id+p.state).join('|');
+  if (key===lastPortKey) return; lastPortKey=key;
+  ins.forEach(i=>i.onmidimessage=null);
+  ins = allIn.filter(isLP); outs = allOut.filter(isLP);
+  ins.forEach(i=>i.onmidimessage=onMsg);
+  if (!outs.length){
+    const seen = allOut.map(p=>p.name).join(', ') || 'none';
+    setStatus(`No Launchpad found. MIDI devices seen: ${seen}`, 'err');
+    return;
+  }
+  outs.forEach(o=>{ try{ o.send(PROGRAMMER_ON); }catch(e){} });
+  setStatus('Connected: ' + outs.map(o=>o.name).join(' + '), 'ok');
+  setTimeout(render,100);
+}
+async function connect(){
+  if (!navigator.requestMIDIAccess){ setStatus('This browser has no Web MIDI. Open this file in Chrome or Edge.','err'); return; }
+  try { midi = await navigator.requestMIDIAccess({sysex:true}); }
+  catch(e){ setStatus('MIDI access was blocked. Click the icon in the address bar, allow MIDI, then try again.','err'); return; }
+  midi.onstatechange = () => setTimeout(bind,300);
+  lastPortKey=''; bind();
+}
+function setStatus(t,cls){ const s=$('status'); s.textContent=t; s.className=cls||''; }
+window.addEventListener('beforeunload',()=>outs.forEach(o=>{ try{o.send(PROGRAMMER_OFF);}catch(e){} }));
+
+// ---------- UI wiring ----------
+$('connect').onclick = ()=>{ audio(); connect(); };
+document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>add(b.dataset.t,+b.dataset.d));
+$('undoBtn').onclick = undo;
+$('resetBtn').onclick = ()=>{ if(confirm('Reset both scores to 0?')) reset(); };
+$('viewBtn').onclick = toggleView;
+$('target').oninput = e => { S.target = Math.max(0, parseInt(e.target.value)||0); save(); };
+function applyColors(){
+  colA = hex127($('colorA').value); colB = hex127($('colorB').value);
+  $('cardA').style.setProperty('--c',$('colorA').value);
+  $('cardB').style.setProperty('--c',$('colorB').value);
+  render(); save();
+}
+$('colorA').oninput = applyColors; $('colorB').oninput = applyColors;
+$('nameA').oninput = save; $('nameB').oninput = save;
+document.addEventListener('keydown',e=>{
+  if (e.target.tagName==='INPUT') return;
+  const k=e.key.toLowerCase();
+  if (k==='q') add('a',1); if (k==='a') add('a',-1);
+  if (k==='p') add('b',1); if (k==='l') add('b',-1);
+  if (k==='z') undo();
+});
+
+// ---------- remember settings ----------
+function save(){ try{ localStorage.setItem('lpScore',JSON.stringify({a:S.a,b:S.b,view:S.view,target:S.target,
+  nameA:$('nameA').value,nameB:$('nameB').value,colorA:$('colorA').value,colorB:$('colorB').value})); }catch(e){} }
+function load(){ try{ const d=JSON.parse(localStorage.getItem('lpScore')||'null'); if(!d) return;
+  Object.assign(S,{a:d.a||0,b:d.b||0,view:d.view||'tally',target:d.target||0});
+  $('nameA').value=d.nameA||$('nameA').value; $('nameB').value=d.nameB||$('nameB').value;
+  if(d.colorA) $('colorA').value=d.colorA; if(d.colorB) $('colorB').value=d.colorB;
+  $('target').value=S.target; }catch(e){} }
+
+load(); applyColors(); update();
+setInterval(()=>{ if (flash) render(); }, 110);
+</script>
+</body>
+</html>
