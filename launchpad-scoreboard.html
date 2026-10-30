@@ -32,6 +32,7 @@
   .help h3 { color:var(--text); margin:0 0 6px; font-size:15px; }
   @media (max-width:800px){ main,.bottom{grid-template-columns:1fr;} .score{font-size:96px;} }
 </style>
+<link rel="stylesheet" href="finish-camera.css">
 </head>
 <body>
 <header>
@@ -42,7 +43,7 @@
 
 <main>
   <section class="team" id="cardA">
-    <input type="text" id="nameA" value="Red Team">
+    <input type="text" id="nameA" aria-label="Red lane team name" value="Red Team">
     <div class="score" id="scoreA">0</div>
     <div class="row">
       <button data-t="a" data-d="-1">−</button>
@@ -51,7 +52,7 @@
     </div>
   </section>
   <section class="team" id="cardB">
-    <input type="text" id="nameB" value="Blue Team">
+    <input type="text" id="nameB" aria-label="Blue lane team name" value="Blue Team">
     <div class="score" id="scoreB">0</div>
     <div class="row">
       <button data-t="b" data-d="-1">−</button>
@@ -69,6 +70,57 @@
   <label><input type="checkbox" id="sound" checked> Sound</label>
   <input type="range" id="vol" min="0.1" max="1" step="0.05" value="0.8" title="Volume">
 </div>
+
+<section class="finish" id="finish-camera" aria-labelledby="finish-title">
+  <h2 id="finish-title">Camera finish</h2>
+  <p>Turn your phone into the finish judge. Mount it still with both lanes visible, align the line, and keep hands and shadows off the track. Red lane scores the left team; blue lane scores the right team.</p>
+  <div class="actions">
+    <button id="cameraStart" class="primary">Start rear camera</button>
+    <button id="cameraStop" disabled>Stop camera</button>
+    <button id="raceCalibrate" disabled>Calibrate empty track</button>
+    <button id="raceArm" disabled class="primary">Arm race</button>
+    <button id="raceCancel" disabled>Cancel race</button>
+  </div>
+  <p class="status" id="raceStatus" role="status" aria-live="polite">Camera off. Start the camera to set up your finish.</p>
+  <div class="camera-layout">
+    <div class="camera-stage" id="cameraStage">
+      <video id="raceVideo" autoplay muted playsinline aria-label="Live finish camera"></video>
+      <canvas id="raceOverlay" aria-hidden="true"></canvas>
+      <div class="camera-placeholder" id="cameraPlaceholder">Your camera preview appears here.<br>Video stays on this device.</div>
+    </div>
+    <div class="settings" id="raceSettings">
+      <label>Finish orientation <select id="raceAxis"><option value="horizontal">Horizontal line / balls move up or down</option><option value="vertical">Vertical line / balls move left or right</option></select></label>
+      <label>Race direction <select id="raceDirection"><option value="forward">Down / right</option><option value="reverse">Up / left</option></select></label>
+      <label>Red lane position <select id="raceRedLane"><option value="first">Left / top</option><option value="second">Right / bottom</option></select></label>
+      <label>Finish line: <output id="raceLineValue">60%</output><input id="raceLine" type="range" min="28" max="72" value="60"></label>
+      <label>Lane divider: <output id="raceSplitValue">50%</output><input id="raceSplit" type="range" min="20" max="80" value="50"></label>
+      <label>Outside edge exclusion: <output id="raceMarginValue">5%</output><input id="raceMargin" type="range" min="0" max="18" value="5"></label>
+      <label>Detection sensitivity <select id="raceSensitivity"><option value="24">High — small / low contrast balls</option><option value="40" selected>Medium</option><option value="60">Low — ignore slight changes</option></select></label>
+      <p class="small">Dashed line = lane divider. Arrow = travel direction. Keep each ball inside its lane and visible before the finish line. Changing settings requires calibration again.</p>
+    </div>
+  </div>
+  <div class="result" id="raceResult" hidden>
+    <h3 id="raceWinner"></h3>
+    <p id="raceResultDetail"></p>
+    <div class="actions" id="raceReview" hidden><button id="raceChooseRed">Award red lane</button><button id="raceChooseBlue">Award blue lane</button><button id="raceChooseTie">Declare tie · no point</button></div>
+    <p id="raceDelivery" role="status" aria-live="polite"></p>
+    <div class="actions"><button id="raceResend" hidden>Resend result to scoreboard</button><a id="raceDownload" download="finish-frame.jpg">Download finish frame</a></div>
+    <img id="racePhoto" alt="Camera frame showing the first detected crossing and finish line">
+  </div>
+  <details id="racePairing">
+    <summary>Pair phone with the Launchpad computer</summary>
+    <p>Optional: run this page on both devices. Connect the Launchpad on the computer. Use the same Wi-Fi. Exchange the two setup codes below once; race results then travel directly to the computer. Keep both pages open. No video is sent.</p>
+    <div class="pair-grid">
+      <div><h3>1. On the computer</h3><button id="pairHost">Create computer code</button><p class="small">Send the generated code to the phone, then paste the phone’s reply below and choose Finish pairing.</p></div>
+      <div><h3>2. On the phone</h3><p class="small">Paste the computer code below, choose Create phone reply, then send the generated reply back to the computer.</p><button id="pairJoin">Create phone reply</button></div>
+      <label>Code from the other device<textarea id="pairInput" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="Paste setup code here"></textarea></label>
+      <label>This device’s generated code<textarea id="pairOutput" readonly aria-label="Generated setup code"></textarea></label>
+    </div>
+    <div class="actions"><button id="pairFinish">Finish pairing (computer)</button><button id="pairCopy">Copy generated code</button><button id="pairDisconnect">Disconnect devices</button></div>
+    <p id="pairStatus" role="status" aria-live="polite">Not paired. Standalone camera results update this page’s scoreboard.</p>
+  </details>
+  <details><summary>Phone setup &amp; fair finishes</summary><p>Open the hosted HTTPS site in Safari or Chrome, allow camera access, and keep this tab visible. Use landscape if it fits your track better. Secure the phone above or beside the course so both finish positions line up with the digital line. Calibrate with an empty, well-lit track; arm before releasing the balls. Test each lane at race speed before playing.</p><p>This is motion-based detection: hands, moving shadows, or a shaking phone can cause false results. Very fast or tiny balls may be missed. Close finishes need human review; the saved image is a sampled frame, not a high-speed photo finish. Camera interruptions cancel an armed race. Pairing uses WebRTC; some school/public networks block it. There is no relay server, so use another Wi-Fi network if pairing fails.</p></details>
+</section>
 
 <div class="bottom">
   <div id="pad" title="Live preview of the Launchpad (click to test)"></div>
@@ -209,7 +261,7 @@ function add(t,d){
   update();
 }
 function undo(){ const h=S.history.pop(); if(h){ S.a=h.a; S.b=h.b; update(); } }
-function reset(){ snapshot(); S.a=0; S.b=0; flash=null; update(); }
+function reset(){ window.dispatchEvent(new Event('scoreboard-reset')); snapshot(); S.a=0; S.b=0; flash=null; update(); }
 function toggleView(){ S.view = S.view==='tally' ? 'numbers' : 'tally'; update(); }
 function update(){
   $('scoreA').textContent=S.a; $('scoreB').textContent=S.b;
@@ -313,7 +365,7 @@ function applyColors(){
 $('colorA').oninput = applyColors; $('colorB').oninput = applyColors;
 $('nameA').oninput = save; $('nameB').oninput = save;
 document.addEventListener('keydown',e=>{
-  if (e.target.tagName==='INPUT') return;
+  if (e.target.isContentEditable || ['INPUT','TEXTAREA','SELECT','BUTTON'].includes(e.target.tagName)) return;
   const k=e.key.toLowerCase();
   if (k==='q') add('a',1); if (k==='a') add('a',-1);
   if (k==='p') add('b',1); if (k==='l') add('b',-1);
@@ -329,8 +381,15 @@ function load(){ try{ const d=JSON.parse(localStorage.getItem('lpScore')||'null'
   if(d.colorA) $('colorA').value=d.colorA; if(d.colorB) $('colorB').value=d.colorB;
   $('target').value=S.target; }catch(e){} }
 
+// The race module awards through the existing score/sound/LED path.
+window.raceScoreboard = {
+  award(team) { add(team, 1); },
+  state() { return { a:S.a, b:S.b, nameA:$('nameA').value, nameB:$('nameB').value }; }
+};
 load(); applyColors(); update();
 setInterval(()=>{ if (flash) render(); }, 110);
 </script>
+<script src="finish-detector.js"></script>
+<script src="finish-camera.js"></script>
 </body>
 </html>
