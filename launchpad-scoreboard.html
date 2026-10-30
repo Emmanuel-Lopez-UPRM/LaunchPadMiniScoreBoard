@@ -107,19 +107,31 @@
     <div class="actions"><button id="raceResend" hidden>Resend result to scoreboard</button><a id="raceDownload" download="finish-frame.jpg">Download finish frame</a></div>
     <img id="racePhoto" alt="Camera frame showing the first detected crossing and finish line">
   </div>
-  <details id="racePairing">
-    <summary>Pair phone with the Launchpad computer</summary>
-    <p>Optional: run this page on both devices. Connect the Launchpad on the computer. Use the same Wi-Fi. Exchange the two setup codes below once; race results then travel directly to the computer. Keep both pages open. No video is sent.</p>
+  <details id="racePairing" open>
+    <summary>Connect the phone camera to the Launchpad computer</summary>
+    <p>Optional: use the phone as the finish camera and let the computer keep the official score and light the Launchpad. Open this site on both devices. No video is sent, only the winning lane.</p>
     <div class="pair-grid">
-      <div><h3>1. On the computer</h3><button id="pairHost">Create computer code</button><p class="small">Send the generated code to the phone, then paste the phone’s reply below and choose Finish pairing.</p></div>
-      <div><h3>2. On the phone</h3><p class="small">Paste the computer code below, choose Create phone reply, then send the generated reply back to the computer.</p><button id="pairJoin">Create phone reply</button></div>
-      <label>Code from the other device<textarea id="pairInput" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="Paste setup code here"></textarea></label>
-      <label>This device’s generated code<textarea id="pairOutput" readonly aria-label="Generated setup code"></textarea></label>
+      <div>
+        <h3>1. On the computer</h3>
+        <button id="pairHost" class="primary">Show pairing QR code</button>
+        <div id="pairHostView" hidden>
+          <div id="pairQr" class="pair-qr"></div>
+          <p class="small">Or type this code on the phone:</p>
+          <p id="pairCode" class="pair-code"></p>
+          <button id="pairNew">Make a new code</button>
+        </div>
+      </div>
+      <div>
+        <h3>2. On the phone</h3>
+        <p class="small">Point the phone’s camera app at the QR code and open the link. It connects by itself.</p>
+        <label>No QR scanner? Type the code<input id="pairInput" maxlength="7" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABC 123"></label>
+        <button id="pairJoin">Connect to computer</button>
+      </div>
     </div>
-    <div class="actions"><button id="pairFinish">Finish pairing (computer)</button><button id="pairCopy">Copy generated code</button><button id="pairDisconnect">Disconnect devices</button></div>
-    <p id="pairStatus" role="status" aria-live="polite">Not paired. Standalone camera results update this page’s scoreboard.</p>
+    <div class="actions"><button id="pairDisconnect" hidden>Disconnect</button></div>
+    <p id="pairStatus" class="status" role="status" aria-live="polite">Not connected. Camera results on this page score on this page’s scoreboard.</p>
   </details>
-  <details><summary>Phone setup &amp; fair finishes</summary><p>Open the hosted HTTPS site in Safari or Chrome, allow camera access, and keep this tab visible. Use landscape if it fits your track better. Secure the phone above or beside the course so both finish positions line up with the digital line. Calibrate with an empty, well-lit track; arm before releasing the balls. Test each lane at race speed before playing.</p><p>This is motion-based detection: hands, moving shadows, or a shaking phone can cause false results. Very fast or tiny balls may be missed. Close finishes need human review; the saved image is a sampled frame, not a high-speed photo finish. Camera interruptions cancel an armed race. Pairing uses WebRTC; some school/public networks block it. There is no relay server, so use another Wi-Fi network if pairing fails.</p></details>
+  <details><summary>Phone setup &amp; fair finishes</summary><p>Open the hosted HTTPS site in Safari or Chrome, allow camera access, and keep this tab visible. Use landscape if it fits your track better. Secure the phone above or beside the course so both finish positions line up with the digital line. Calibrate with an empty, well-lit track; arm before releasing the balls. Test each lane at race speed before playing.</p><p>This is motion-based detection: hands, moving shadows, or a shaking phone can cause false results. Very fast or tiny balls may be missed. Close finishes need human review; the saved image is a sampled frame, not a high-speed photo finish. Camera interruptions cancel an armed race. Pairing sends tiny result messages through a free public internet relay, so both devices need internet access (Wi-Fi or cellular; they don’t have to be on the same network).</p></details>
 </section>
 
 <div class="bottom">
@@ -390,6 +402,8 @@ load(); applyColors(); update();
 setInterval(()=>{ if (flash) render(); }, 110);
 </script>
 <script src="finish-detector.js"></script>
-<script src="finish-camera.js?v=2"></script>
+<script src="qr.js?v=3"></script>
+<script src="relay-link.js?v=3"></script>
+<script src="finish-camera.js?v=3"></script>
 </body>
 </html>

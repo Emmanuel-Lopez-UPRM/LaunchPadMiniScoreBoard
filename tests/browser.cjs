@@ -4,27 +4,30 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
+const { startBroker } = require('./mini-broker.cjs');
 const server = http.createServer((req,res) => {
  const name = req.url.split('?')[0];
- const allowed = ['/', '/launchpad-scoreboard.html','/finish-camera.css','/finish-camera.js','/finish-detector.js'];
+ const allowed = ['/', '/launchpad-scoreboard.html','/finish-camera.css','/finish-camera.js','/finish-detector.js','/qr.js','/relay-link.js'];
  if (!allowed.includes(name)) {res.writeHead(404);res.end();return;}
  const file = name === '/' ? '/launchpad-scoreboard.html' : name;
  res.setHeader('Content-Type', file.endsWith('.css') ? 'text/css' : file.endsWith('.js') ? 'text/javascript' : 'text/html');
  res.end(fs.readFileSync(path.join(root,file)));
 });
-let browser;
+let browser, broker;
 (async()=> {
  await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
+ broker = await startBroker();
  const url = `http://localhost:${server.address().port}/launchpad-scoreboard.html`;
+ const relay = `broker=${encodeURIComponent(broker.url)}`;
  browser = await (process.env.TEST_BROWSER === 'webkit' ? webkit : chromium).launch({ ...(process.env.BROWSER_EXECUTABLE ? {executablePath:process.env.BROWSER_EXECUTABLE} : {}),headless:true });
  fs.mkdirSync(path.join(root,'test-results'),{recursive:true});
  const errors=[];
  const context=await browser.newContext({viewport:{width:1280,height:900}});
- const host=await context.newPage(), phone=await context.newPage();
- for(const p of [host,phone]) {
-  p.on('pageerror',e=>errors.push(e.message));
-  await p.goto(url);
- }
+ // Separate contexts = separate devices (no shared storage).
+ const phoneContext=await browser.newContext({viewport:{width:1280,height:900}});
+ const host=await context.newPage(), phone=await phoneContext.newPage();
+ for(const p of [host,phone]) p.on('pageerror',e=>errors.push(e.message));
+ await host.goto(`${url}?${relay}`); await phone.goto(url);
  async function syntheticCamera(page, mode = 'normal') {
   await page.evaluate(mode=>{
    const canvas=document.createElement('canvas'); canvas.width=640;canvas.height=480;
@@ -62,18 +65,18 @@ let browser;
  await phone.waitForTimeout(300); assert.equal(await phone.locator('#scoreA').innerText(),'1');
  console.log('PASS standalone red crossing, snapshot, one point only');
  if (!process.env.TEST_CAMERA_ONLY) {
- // Real peer connection between two pages with no mocked network APIs.
- for(const p of [host,phone]) await p.locator('#racePairing').evaluate(el=>el.open=true);
+ // QR pairing: computer shows a code, phone opens the QR link and joins by itself.
  await host.locator('#pairHost').click();
- await host.waitForFunction(()=>document.getElementById('pairOutput').value.length>100);
- await phone.locator('#pairInput').fill(await host.locator('#pairOutput').inputValue());
- await phone.locator('#pairJoin').click();
- await phone.waitForFunction(()=>document.getElementById('pairOutput').value.length>100);
- await host.locator('#pairInput').fill(await phone.locator('#pairOutput').inputValue());
- await host.locator('#pairFinish').click();
+ await host.waitForFunction(()=>!!document.querySelector('#pairQr svg'));
+ const code=(await host.locator('#pairCode').innerText()).replace(/\s/g,'');
+ assert.match(code,/^[A-HJ-NP-Z2-9]{6}$/);
+ await phone.goto(`${url}?pair=${code}&b=0&${relay}`);
  await host.waitForFunction(()=>document.getElementById('pairStatus').textContent.startsWith('Phone connected'));
  await phone.waitForFunction(()=>document.getElementById('pairStatus').textContent.startsWith('Computer connected'));
- await phone.evaluate(()=>window.balls=[]);
+ console.log('PASS QR link pairing connects both devices with no copy/paste');
+ await syntheticCamera(phone);
+ await phone.locator('#cameraStart').click();
+ await phone.waitForFunction(()=>!document.getElementById('raceCalibrate').disabled);
  await phone.locator('#raceCalibrate').click();
  await phone.waitForFunction(()=>!document.getElementById('raceArm').disabled);
  await phone.locator('#raceArm').click();
@@ -82,9 +85,18 @@ let browser;
  await phone.waitForFunction(()=>document.getElementById('raceDelivery').textContent==='Computer confirmed the result.');
  assert.equal(await host.locator('#scoreB').innerText(),'1');
  assert.equal(await phone.locator('#scoreB').innerText(),'0');
- await phone.locator('#raceResend').evaluate(el=>el.click());await phone.waitForTimeout(150);
+ await phone.locator('#raceResend').evaluate(el=>el.click());await phone.waitForTimeout(300);
  assert.equal(await host.locator('#scoreB').innerText(),'1');
- console.log('PASS real WebRTC phone blue crossing -> host award -> receipt; resend deduplicated');
+ console.log('PASS relay phone blue crossing -> host award -> receipt; resend deduplicated');
+ // Relay drop: both sides reconnect by themselves.
+ broker.dropAll();
+ await host.waitForFunction(()=>document.getElementById('pairStatus').textContent.startsWith('Phone connected'),null,{timeout:15000});
+ await phone.waitForFunction(()=>document.getElementById('pairStatus').textContent.startsWith('Computer connected'),null,{timeout:15000});
+ // Computer reload keeps the same code, so the phone reconnects without rescanning.
+ await host.reload();
+ assert.equal((await host.locator('#pairCode').innerText()).replace(/\s/g,''),code);
+ await host.waitForFunction(()=>document.getElementById('pairStatus').textContent.startsWith('Phone connected'),null,{timeout:15000});
+ console.log('PASS automatic reconnect after relay drop and computer reload');
  // Close crossing needs review; no automatic award, double manual click still one.
  await phone.evaluate(()=>window.balls=[]);await phone.locator('#raceCalibrate').click();
  await phone.waitForFunction(()=>!document.getElementById('raceArm').disabled);await phone.locator('#raceArm').click();
@@ -94,8 +106,21 @@ let browser;
  assert.equal(await host.locator('#scoreA').innerText(),'0');assert.equal(await host.locator('#scoreB').innerText(),'1');
  await phone.locator('#raceChooseRed').click();
  await phone.waitForFunction(()=>document.getElementById('raceDelivery').textContent==='Computer confirmed the result.');
- await phone.locator('#raceChooseRed').evaluate(el=>el.click());assert.equal(await host.locator('#scoreA').innerText(),'1');
+ await phone.locator('#raceChooseRed').evaluate(el=>el.click());await phone.waitForTimeout(300);assert.equal(await host.locator('#scoreA').innerText(),'1');
  console.log('PASS close finish defers scoring to review, manual award once');
+ // Typed code path (no QR scanner) on a third device.
+ const typedContext=await browser.newContext(); const typed=await typedContext.newPage();
+ typed.on('pageerror',e=>errors.push(e.message));
+ await typed.goto(`${url}?${relay}`);
+ await typed.locator('#pairInput').fill(code.slice(0,3).toLowerCase()+' '+code.slice(3));
+ await typed.locator('#pairJoin').click();
+ await typed.waitForFunction(()=>document.getElementById('pairStatus').textContent.startsWith('Computer connected'),null,{timeout:15000});
+ assert.ok(typed.url().includes(`pair=${code}`));
+ await typed.locator('#pairDisconnect').click();
+ assert.ok((await typed.locator('#pairStatus').innerText()).startsWith('Not connected'));
+ await typedContext.close();
+ await host.locator('#pairDisconnect').click();
+ console.log('PASS typed pairing code and disconnect');
  }
  // Mobile sizing, portrait and landscape, camera stop.
  await phone.setViewportSize({width:375,height:812});await phone.screenshot({path:path.join(root,'test-results','mobile.png'),fullPage:true});
@@ -138,5 +163,5 @@ let browser;
   console.log(`PASS calibration regression: ${mode}`);
  }
  assert.deepEqual(errors,[]);console.log('PASS no uncaught browser errors');
- await browser.close(); server.close();
-})().catch(async e=>{console.error(e);await browser?.close();server.close();process.exitCode=1;});
+ await browser.close(); server.close(); broker.close();
+})().catch(async e=>{console.error(e);await browser?.close();server.close();broker?.close();process.exitCode=1;});

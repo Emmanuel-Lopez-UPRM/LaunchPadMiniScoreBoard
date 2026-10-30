@@ -14,7 +14,7 @@ This address only works after Pages is enabled and deployed. Alternatively, put 
 
 For local desktop development: `python3 -m http.server 8000`, then open `http://localhost:8000`. Run detector tests with `node --test tests/*.test.cjs` (or `npm test`).
 
-For browser integration tests, run `npm ci`, `npx playwright install chromium`, and `npm run test:browser`. The suite starts its own local server, feeds generated ball footage through a real video element, pairs two pages over real WebRTC, and checks one-time scoring, close-finish review, camera errors, cancellation, and phone layouts. Set `BROWSER_EXECUTABLE` to use an existing Chrome installation instead of Playwright’s browser. For Safari-engine camera checks, install WebKit with `npx playwright install webkit`, then run `TEST_BROWSER=webkit TEST_CAMERA_ONLY=1 npm run test:browser`. This checks repeated video timestamps, missing frame callbacks, the animation-frame fallback, and frozen-feed recovery without relying on WebKit’s headless WebRTC networking. These are simulated-camera tests; a physical phone, real track, and connected Launchpad still need an on-site trial.
+For browser integration tests, run `npm ci`, `npx playwright install chromium`, and `npm run test:browser`. The suite starts its own local web server and a tiny local MQTT relay (`tests/mini-broker.cjs`), feeds generated ball footage through a real video element, pairs two pages with the QR link and the typed code, and checks one-time scoring, close-finish review, camera errors, cancellation, and phone layouts. Set `BROWSER_EXECUTABLE` to use an existing Chrome installation instead of Playwright’s browser. For Safari-engine camera checks, install WebKit with `npx playwright install webkit`, then run `TEST_BROWSER=webkit TEST_CAMERA_ONLY=1 npm run test:browser`. This checks repeated video timestamps, missing frame callbacks, the animation-frame fallback, and frozen-feed recovery without the pairing steps. These are simulated-camera tests; a physical phone, real track, and connected Launchpad still need an on-site trial.
 
 ## Camera finish setup
 
@@ -29,25 +29,26 @@ The detector compares connected regions against the calibrated track, tracks the
 
 ## Phone camera → computer → Launchpad
 
-Phones can run the camera feature even if they do not support Web MIDI. For the Launchpad, use Chrome or Edge on a computer and connect it there.
+Phones can run the camera even though they can't control the Launchpad. Let the computer keep the official score:
 
-1. Open the same website on phone and computer. Prefer the same Wi-Fi network. Keep both tabs open and visible.
-2. Open **Pair phone with the Launchpad computer** on both devices.
-3. On the computer, choose **Create computer code**. Copy the full generated code and transfer it to the phone (for example with your usual clipboard or messaging app).
-4. On the phone, paste it in **Code from the other device** and choose **Create phone reply**. Transfer the generated reply back to the computer.
-5. On the computer, paste that reply and choose **Finish pairing**. Wait for “Phone connected” / “Computer connected.”
-6. Run the camera race on the phone. The computer receives the winning lane, awards a point using the existing score/sound/LED logic, and acknowledges receipt. The phone says **Computer confirmed the result**. The phone’s own score counters are independent; watch the computer for official scores.
+1. On the computer (Chrome or Edge, Launchpad plugged in), open the site and press **Show pairing QR code**.
+2. On the phone, point the regular camera app at the QR code and open the link. It connects by itself. If the phone can't scan, type the 6-character code under the QR code and press **Connect to computer**.
+3. Wait for **Phone connected** on the computer and **Computer connected** on the phone. Then run races on the phone as usual.
 
-Only result IDs and winning lanes travel over the encrypted WebRTC data channel, not video. Signaling is manual to keep this a static website without credentials or a backend. A public Google STUN service helps establish the connection; there is no TURN relay. Some school/public Wi-Fi and cellular network combinations will block direct connections. Try a different Wi-Fi network if pairing fails. Pair again after reloading either page.
+The computer remembers its code. If either page is reloaded, or the internet drops for a moment, both sides reconnect by themselves, so there's no need to scan again. Use **Make a new code** to stop an old phone from sending results.
 
-A disconnected phone does not fall back to awarding local points while still in camera pairing mode. If a finished result has no receipt, reconnect and choose **Resend result to scoreboard** before starting another race. Duplicate result IDs do not award another point, including after a computer reload when local storage is available. Only pair devices you trust; the paired phone can submit race outcomes.
+How it works: both pages join a private "room" (the code) on a free public MQTT relay (HiveMQ's public broker, with EMQX's as a backup) over a secure WebSocket. Only tiny JSON messages travel: pings, a result ID with the winning lane, and the computer's receipt. No video is sent. There is no account, server or library to install. The QR generator (`qr.js`) and relay client (`relay-link.js`) are small dependency-free files in this repo.
+
+Both devices need internet access, but they don't have to be on the same network: phone on cellular and computer on school Wi-Fi works. A finished result is kept on the phone and sent again automatically until the computer confirms it. Duplicate result IDs never add another point, even after a computer reload.
+
+Public relays are shared: anyone who learns your code could send a fake result during the event. That's fine for an open house. Make a new code if you suspect a problem, and use **Undo** on the computer to fix a wrong point.
 
 ## Limits and race fairness
 
 - This is a motion-based prototype, not a certified high-speed timing system. It identifies a lane’s moving foreground, not the semantic identity of a ball. Hands, moving shadows, reflections, or a moving phone can cause false triggers.
 - Keep the track empty during calibration. Very small, low-contrast, blurred, occluded, or fast balls may be missed, particularly if they cross between camera frames without a visible approach. Processing uses a 320-pixel-wide image to keep phone usage light.
 - Results are frame intervals, not precise millisecond timings. Overlapping intervals require review. The downloaded image is a sampled reference frame, not definitive evidence of an exact tie. No full race video is recorded.
-- Large scene changes, frame gaps over 250 ms, camera orientation changes, a hidden camera tab, lost pairing during an armed race, and camera disconnects cancel detection. Recalibrate before retrying. Screen wake lock is requested when available, but keep an eye on the phone.
+- Large scene changes, frame gaps over 250 ms, camera orientation changes, a hidden camera tab, and camera disconnects cancel detection. Recalibrate before retrying. Screen wake lock is requested when available, but keep an eye on the phone.
 - Changing detector settings requires calibration again. Normal manual scoreboard controls and Launchpad views remain available.
 
-Browser API references: [camera permissions and HTTPS](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia), [per-frame callbacks](https://developer.mozilla.org/en-US/docs/Web/API/HTMLVideoElement/requestVideoFrameCallback), [WebRTC](https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection), [GitHub Pages setup](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site).
+Browser API references: [camera permissions and HTTPS](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia), [per-frame callbacks](https://developer.mozilla.org/en-US/docs/Web/API/HTMLVideoElement/requestVideoFrameCallback), [WebSocket](https://developer.mozilla.org/en-US/docs/Web/API/WebSocket), [GitHub Pages setup](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site).

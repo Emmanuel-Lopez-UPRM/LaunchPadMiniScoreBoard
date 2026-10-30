@@ -1,4 +1,4 @@
-/* Camera controller and optional serverless WebRTC result link. */
+/* Camera controller and optional phone → computer result link (QR-code pairing). */
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -8,12 +8,11 @@
   let lastWallFrame = null, videoCallback = null, animationCallback = null;
   let lastPlaybackTime = null, lastDecodedFrames = null, lastVideoSignal = null;
   let race = null, evidence = null, wakeLock = null, starting = false;
-  let peer = null, channel = null, role = null, pairingBusy = false;
+  let role = null;
   let deliveryTimer = null;
   const receipts = new Set();
   try { JSON.parse(localStorage.getItem('raceReceipts') || '[]').forEach(id => receipts.add(id)); } catch (_) {}
   const status = (message, state = '') => { $('raceStatus').textContent = message; $('raceStatus').dataset.state = state; };
-  const paired = () => channel?.readyState === 'open';
   const teamForLane = lane => (lane === 0) === ($('raceRedLane').value === 'first') ? 'a' : 'b';
   const laneName = team => team === 'a' ? 'Red' : 'Blue';
   function settings() {
@@ -221,101 +220,113 @@
     if (role === 'camera') sendResult();
     else { awardOnce(race); race.delivered = true; $('raceDelivery').textContent = winner ? 'One point added to this scoreboard.' : 'Tie recorded; scores unchanged.'; }
   }
-  function sendResult() {
+  function sendResult(quiet = false) {
     if (!race?.resolved || role !== 'camera') return;
-    $('raceResend').hidden = false;
-    if (!paired()) { $('raceDelivery').textContent = 'Computer disconnected. Result saved on this page; reconnect and resend. No local point added.'; return; }
-    channel.send(JSON.stringify({ type:'result', id:race.id, winner:race.winner }));
+    $('raceResend').hidden = race.delivered;
+    if (race.delivered) return;
+    if (!paired()) { $('raceDelivery').textContent = 'Computer not connected. The result is saved and will be sent automatically when it reconnects. No local point added.'; return; }
+    send({ type:'result', id:race.id, winner:race.winner });
+    if (quiet) return;
     $('raceDelivery').textContent = 'Sending result to computer…';
     clearTimeout(deliveryTimer);
-    deliveryTimer = setTimeout(() => { $('raceDelivery').textContent = 'No receipt yet. Resend the result; repeated sends never add another point.'; }, 3000);
+    deliveryTimer = setTimeout(() => { if (!race?.delivered) $('raceDelivery').textContent = 'No receipt yet. Retrying automatically; repeated sends never add another point.'; }, 4000);
   }
-  // Manual signaling avoids a hosted signaling/database dependency or account setup.
-  function disconnect() {
-    const oldPeer = peer; peer = null; channel = null; role = null; oldPeer?.close();
-    clearTimeout(deliveryTimer); $('pairOutput').value = '';
-    $('pairStatus').textContent = 'Not paired. Standalone camera results update this page’s scoreboard.'; controls();
+  // ---------- Phone ↔ computer link ----------
+  // The computer shows a QR code; the phone scans it and both pages join the same
+  // private "room" on a free public MQTT relay. Only tiny JSON messages are sent.
+  const query = new URLSearchParams(location.search);
+  const BROKERS = query.get('broker') ? [query.get('broker')] : ['wss://broker.hivemq.com:8884/mqtt', 'wss://broker.emqx.io:8084/mqtt'];
+  const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let link = null, room = null, peerSeen = -1e9, onlineAt = 0, tickTimer = null, wasPaired = false;
+  const topic = to => `lpsb/v1/${room}/${to}`;
+  function paired() { return !!link?.online && performance.now() - peerSeen < 9000; }
+  const newCode = () => [...crypto.getRandomValues(new Uint8Array(6))].map(v => CODE_CHARS[v % 32]).join('');
+  const cleanCode = text => String(text || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const validCode = code => /^[A-HJ-NP-Z2-9]{6}$/.test(code);
+  function send(obj) { return !!link && link.publish(topic(role === 'host' ? 'cam' : 'host'), obj); }
+  function pairUrl() {
+    const u = new URL(location.href); u.search = ''; u.hash = '';
+    u.searchParams.set('pair', room); u.searchParams.set('b', String(link?.index ?? 0));
+    if (query.get('broker')) u.searchParams.set('broker', query.get('broker'));
+    return u.href;
   }
-  function setupPeer(newRole) {
+  function setPageCode(code) {
+    try { const u = new URL(location.href); if (code) u.searchParams.set('pair', code); else { u.searchParams.delete('pair'); u.searchParams.delete('b'); } history.replaceState(null, '', u.href); } catch (_) {}
+  }
+  function startLink(newRole, code, brokerIndex = 0) {
     if (phase === 'armed' || phase === 'calibrating') resetCalibration('Pairing changed. Race cancelled; recalibrate.');
-    disconnect(); role = newRole;
-    peer = new RTCPeerConnection({ iceServers:[{ urls:'stun:stun.l.google.com:19302' }] });
-    const current = peer;
-    peer.onconnectionstatechange = () => {
-      if (peer !== current) return;
-      if (['failed','disconnected','closed'].includes(peer.connectionState)) {
-        $('pairStatus').textContent = 'Link interrupted. Re-pair both devices before the next race. Pending results can be resent.';
-        if (phase === 'armed') resetCalibration('Computer link lost. Race cancelled; reconnect and recalibrate.');
-        controls();
-      }
-    };
-    peer.ondatachannel = event => wireChannel(event.channel);
-    return peer;
+    stopLink(false);
+    role = newRole; room = code; peerSeen = -1e9; wasPaired = false;
+    link = new RelayLink(BROKERS, { onState: linkState, onMessage: linkMessage });
+    link.subscribe(topic(role === 'host' ? 'host' : 'cam'));
+    link.start(Math.max(0, Math.min(brokerIndex | 0, BROKERS.length - 1)));
+    tickTimer = setInterval(tick, 2500);
+    try { if (role === 'host') localStorage.setItem('lpsbHostRoom', room); } catch (_) {}
+    if (role === 'camera') setPageCode(room);
+    showPairing(); updatePairStatus(); controls();
   }
-  function wireChannel(dataChannel) {
-    channel = dataChannel;
-    dataChannel.onopen = () => {
-      $('pairStatus').textContent = role === 'host' ? 'Phone connected. Camera results will add points here and update the Launchpad.' : 'Computer connected. Camera results will score on the computer.'; controls();
-    };
-    dataChannel.onclose = () => {
-      if (channel !== dataChannel) return;
-      $('pairStatus').textContent = 'Disconnected. Re-pair before the next race; resend a pending result after reconnecting.';
-      if (phase === 'armed') resetCalibration('Computer link lost. Race cancelled; reconnect and recalibrate.'); controls();
-    };
-    dataChannel.onmessage = event => {
-      try {
-        if (typeof event.data !== 'string' || event.data.length > 2048) return;
-        const message = JSON.parse(event.data);
-        if (role === 'host' && message.type === 'result' && /^[a-f0-9-]{36}$/i.test(message.id) && ['a','b',null].includes(message.winner)) {
-          awardOnce(message);
-          $('pairStatus').textContent = message.winner ? `${laneName(message.winner)} lane won. Point received from phone.` : 'Tie received. Scores unchanged.';
-          dataChannel.send(JSON.stringify({ type:'receipt', id:message.id }));
-        } else if (role === 'camera' && message.type === 'receipt' && message.id === race?.id) {
-          race.delivered = true; clearTimeout(deliveryTimer); $('raceDelivery').textContent = 'Computer confirmed the result.'; $('raceResend').hidden = true;
-        }
-      } catch (_) { $('pairStatus').textContent = 'Could not process a result. Check the score and resend from the phone.'; }
-    };
-  }
-  async function codeFor(current) {
-    if (current.iceGatheringState !== 'complete') {
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { cleanup(); reject(new Error('Network setup timed out. Try again on the same Wi-Fi.')); },15000);
-        const check = () => { if (current.iceGatheringState === 'complete') { cleanup(); resolve(); } };
-        function cleanup() { clearTimeout(timer); current.removeEventListener('icegatheringstatechange',check); }
-        current.addEventListener('icegatheringstatechange',check); check();
-      });
+  function stopLink(forget = true) {
+    clearInterval(tickTimer); link?.stop(); link = null;
+    if (forget) {
+      if (role === 'host') { try { localStorage.removeItem('lpsbHostRoom'); } catch (_) {} }
+      if (role === 'camera') setPageCode(null);
+      role = null; room = null; wasPaired = false;
+      showPairing(); updatePairStatus(); controls();
     }
-    if (peer !== current) throw new Error('Pairing was cancelled.');
-    return btoa(JSON.stringify({ version:1, description:current.localDescription }));
   }
-  function readCode(type) {
-    const input = $('pairInput').value.replace(/\s/g,'');
-    if (input.length > 50000) throw new Error('Setup code is too long.');
-    const code = JSON.parse(atob(input));
-    if (code.version !== 1 || code.description?.type !== type || typeof code.description.sdp !== 'string') throw new Error(`Paste the ${type === 'offer' ? 'computer code' : 'phone reply'}.`);
-    return code.description;
+  function tick() {
+    if (!link) return;
+    send({ type:'ping', role });
+    // If the phone reaches a relay but never hears the computer, the computer may
+    // be on the other public relay: switch and keep looking.
+    if (role === 'camera' && link.online && !paired() && performance.now() - onlineAt > 12000 && BROKERS.length > 1) { onlineAt = performance.now(); link.useNext(); }
+    checkPaired();
+    if (role === 'camera' && paired() && race?.resolved && !race.delivered) sendResult(true);
   }
-  async function pairing(action) {
-    if (pairingBusy) return;
-    pairingBusy = true;
-    ['pairHost','pairJoin','pairFinish','pairDisconnect'].forEach(id => { $(id).disabled = true; });
-    $('pairStatus').textContent = 'Preparing connection…';
-    try {
-      if (action === 'host') {
-        const current = setupPeer('host'); wireChannel(current.createDataChannel('race-results'));
-        await current.setLocalDescription(await current.createOffer()); $('pairOutput').value = await codeFor(current);
-        $('pairStatus').textContent = 'Computer code ready. Send it to the phone, then paste the phone reply and finish pairing here.';
-      } else if (action === 'join') {
-        const description = readCode('offer'), current = setupPeer('camera');
-        await current.setRemoteDescription(description); await current.setLocalDescription(await current.createAnswer());
-        $('pairOutput').value = await codeFor(current);
-        $('pairStatus').textContent = 'Phone reply ready. Send it to the computer and finish pairing there.';
-      } else {
-        if (!peer || role !== 'host') throw new Error('Create a computer code first.');
-        await peer.setRemoteDescription(readCode('answer')); $('pairStatus').textContent = 'Connecting… If it fails, try the same Wi-Fi and create new codes.';
-      }
-    } catch (error) { $('pairStatus').textContent = `Pairing failed: ${error.message}`; }
-    finally { pairingBusy = false; ['pairHost','pairJoin','pairFinish','pairDisconnect'].forEach(id => { $(id).disabled = false; }); controls(); }
+  function checkPaired() {
+    const now = paired();
+    if (now === wasPaired) return;
+    wasPaired = now; updatePairStatus(); controls();
+    if (now && role === 'camera' && race?.resolved && !race.delivered) sendResult();
+  }
+  function linkState(state) {
+    if (state === 'online') { onlineAt = performance.now(); send({ type:'ping', role }); if (role === 'host') showPairing(); }
+    checkPaired(); updatePairStatus();
+  }
+  function linkMessage(_topic, message) {
+    if (!message || typeof message !== 'object') return;
+    const fromOther = message.role ? message.role !== role : true;
+    if (!fromOther) return;
+    peerSeen = performance.now();
+    if (!wasPaired) { send({ type:'ping', role }); checkPaired(); }
+    if (role === 'host' && message.type === 'result' && /^[a-f0-9-]{36}$/i.test(message.id) && ['a','b',null].includes(message.winner)) {
+      awardOnce(message);
+      $('pairStatus').textContent = message.winner ? `${laneName(message.winner)} lane won. Point received from the phone.` : 'Tie received from the phone. Scores unchanged.';
+      send({ type:'receipt', id:message.id });
+    } else if (role === 'camera' && message.type === 'receipt' && message.id === race?.id && !race.delivered) {
+      race.delivered = true; clearTimeout(deliveryTimer);
+      $('raceDelivery').textContent = 'Computer confirmed the result.'; $('raceResend').hidden = true;
+    }
+  }
+  function showPairing() {
+    const hosting = role === 'host' && !!room;
+    $('pairHostView').hidden = !hosting;
+    if (hosting) {
+      try { $('pairQr').innerHTML = QR.svg(pairUrl()); } catch (_) { $('pairQr').textContent = ''; }
+      $('pairCode').textContent = room.slice(0, 3) + ' ' + room.slice(3);
+    }
+    $('pairHost').textContent = hosting ? 'Showing pairing code' : 'Show pairing QR code';
+    $('pairDisconnect').hidden = !role;
+    if (role === 'camera') $('pairInput').value = room;
+  }
+  function updatePairStatus() {
+    let text;
+    if (!role) text = 'Not connected. Camera results on this page score on this page’s scoreboard.';
+    else if (!link?.online) text = 'Connecting to the internet relay… Both devices need internet access.';
+    else if (role === 'host') text = paired() ? 'Phone connected. Camera results will add points here and update the Launchpad.' : 'Waiting for the phone. Scan the QR code with the phone’s camera app and open the link.';
+    else text = paired() ? 'Computer connected. Race results will score on the computer.' : `Looking for the computer (code ${room})… Keep the scoreboard page open on the computer.`;
+    $('pairStatus').textContent = text;
+    $('pairStatus').dataset.state = role && paired() ? 'ok' : '';
   }
   $('cameraStart').onclick = startCamera; $('cameraStop').onclick = () => stopCamera();
   $('raceCalibrate').onclick = calibrate; $('raceArm').onclick = arm;
@@ -326,15 +337,18 @@
   }));
   $('raceChooseRed').onclick = () => resolveRace('a'); $('raceChooseBlue').onclick = () => resolveRace('b'); $('raceChooseTie').onclick = () => resolveRace(null);
   $('raceResend').onclick = sendResult;
-  $('pairHost').onclick = () => pairing('host'); $('pairJoin').onclick = () => pairing('join'); $('pairFinish').onclick = () => pairing('finish');
-  $('pairDisconnect').onclick = () => { if (phase === 'armed') resetCalibration('Link disconnected. Race cancelled; recalibrate.'); disconnect(); };
-  $('pairCopy').onclick = async () => {
-    try { await navigator.clipboard.writeText($('pairOutput').value); $('pairStatus').textContent = 'Code copied. Paste it on the other device.'; }
-    catch (_) { $('pairOutput').select(); $('pairStatus').textContent = 'Select and copy the generated code, then paste it on the other device.'; }
+  $('pairHost').onclick = () => { if (role !== 'host') startLink('host', newCode()); };
+  $('pairNew').onclick = () => startLink('host', newCode());
+  $('pairJoin').onclick = () => {
+    const code = cleanCode($('pairInput').value);
+    if (!validCode(code)) { $('pairStatus').textContent = 'Type the 6-character code shown on the computer.'; return; }
+    startLink('camera', code, 0);
   };
+  $('pairInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('pairJoin').click(); });
+  $('pairDisconnect').onclick = () => stopLink(true);
   document.addEventListener('visibilitychange', () => { if (document.hidden && ['armed','calibrating'].includes(phase)) resetCalibration('Page was hidden. Race cancelled; recalibrate before racing.'); });
   window.addEventListener('scoreboard-reset', () => { if (['armed','calibrating'].includes(phase)) resetCalibration('Scoreboard reset. Race cancelled; recalibrate.'); });
-  window.addEventListener('pagehide', () => { stopCamera(); disconnect(); });
+  window.addEventListener('pagehide', () => { stopCamera(); link?.stop(); });
   setInterval(() => {
     if (phase === 'calibrating' && performance.now() - calibrationStart > 8000) {
       resetCalibration('Calibration could not read enough camera frames. Keep the preview visible, stop and restart the camera, then try again.');
@@ -342,5 +356,14 @@
     }
     if (phase === 'armed' && lastWallFrame !== null && performance.now() - lastWallFrame > 500) resetCalibration('Camera stopped delivering frames. Race cancelled; recalibrate.');
   },250);
-  drawOverlay(); controls();
+  // Phone opened from the QR code → join automatically. Computer that was showing
+  // a code before a reload → keep the same code so the phone reconnects by itself.
+  const linkedCode = cleanCode(query.get('pair'));
+  let savedHostRoom = null; try { savedHostRoom = localStorage.getItem('lpsbHostRoom'); } catch (_) {}
+  if (validCode(linkedCode)) {
+    startLink('camera', linkedCode, +query.get('b') || 0);
+    $('racePairing').open = true;
+    setTimeout(() => $('finish-camera').scrollIntoView({ block:'start' }), 300);
+  } else if (validCode(savedHostRoom || '')) startLink('host', savedHostRoom);
+  updatePairStatus(); drawOverlay(); controls();
 })();

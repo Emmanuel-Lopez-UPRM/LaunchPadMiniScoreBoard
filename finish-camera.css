@@ -26,7 +26,13 @@ input, select, textarea { font:inherit; }
 .finish details { border-top:1px solid var(--line); margin-top:20px; padding-top:18px; }
 .finish summary { cursor:pointer; padding:8px 0; font-weight:600; }
 .finish .pair-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
-.finish textarea { min-height:100px; font-family:ui-monospace,monospace; font-size:12px; overflow-wrap:anywhere; }
+.finish input[type=text], .finish #pairInput { width:100%; max-width:220px; padding:10px; border:1px solid #505565; border-radius:8px; background:#0e0f12; color:var(--text); font-size:22px; letter-spacing:3px; text-transform:uppercase; font-family:ui-monospace,monospace; }
+.finish .pair-grid > div { display:grid; gap:12px; align-content:start; justify-items:start; }
+.finish .pair-grid h3 { margin:0; }
+.pair-qr { width:220px; max-width:100%; background:#fff; padding:6px; border-radius:10px; }
+.pair-qr svg { display:block; width:100%; height:auto; }
+.finish .pair-code { margin:0; font:700 34px/1.1 ui-monospace,monospace; letter-spacing:4px; color:var(--text); }
+#pairStatus[data-state=ok] { border-color:#72e3a4; color:#9ff0c2; }
 .finish .small { font-size:13px; }
 .finish [hidden] { display:none !important; }
 @media(max-width:800px) { .finish { margin:0 12px 24px; padding:16px; } .finish .camera-layout,.finish .pair-grid { grid-template-columns:1fr; } main { padding:16px 12px; gap:12px; grid-template-columns:1fr 1fr; } .team { padding:14px 8px; } .team input[type=text] { font-size:18px; } .score { font-size:72px; } .bottom { padding:0 12px 24px; } header { padding:14px 12px; } .row { gap:8px; flex-wrap:wrap; } .row button { width:48px; } .bar { padding:0 12px 16px; } }
